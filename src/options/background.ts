@@ -22,9 +22,11 @@ import {
 } from "./store/themeStoreManager";
 import { fetchAllStoreThemes } from "./store/themeStoreService";
 import { logBackground, warnBackground } from "@core/logger";
+import { initDirectLyrics, isMusicPage } from "./directLyrics";
 
 const THEME_UPDATE_ALARM = "theme-update-check";
-const UPDATE_INTERVAL_MINUTES = 360; // 6 hours
+const UPDATE_INTERVAL_MS = 6 * 60 * 60 * 1000;
+let maintenance: Promise<void> | null = null;
 
 // -- Symlinked Theme Migration --------------------------
 
@@ -116,39 +118,30 @@ async function checkAndApplyThemeUpdates(): Promise<void> {
   }
 }
 
-function setupThemeUpdateAlarm(): void {
-  chrome.alarms.get(THEME_UPDATE_ALARM, existingAlarm => {
-    if (!existingAlarm) {
-      chrome.alarms.create(THEME_UPDATE_ALARM, {
-        delayInMinutes: 1,
-        periodInMinutes: UPDATE_INTERVAL_MINUTES,
-      });
-      logBackground("Theme update alarm created");
-    }
+chrome.runtime.onInstalled.addListener(() => {
+  void chrome.alarms.clear(THEME_UPDATE_ALARM);
+});
+
+async function maintainOnMusicPage(): Promise<void> {
+  if (maintenance) return maintenance;
+  maintenance = (async () => {
+    await chrome.alarms.clear(THEME_UPDATE_ALARM);
+    await migrateSymlinkedThemes();
+    await resyncAppliedThemeCss();
+    const stored = await getLocalStorage<{ musicPageThemeCheck?: number }>(["musicPageThemeCheck"]);
+    if (Date.now() - (stored.musicPageThemeCheck || 0) < UPDATE_INTERVAL_MS) return;
+    await chrome.storage.local.set({ musicPageThemeCheck: Date.now() });
+    await checkAndApplyThemeUpdates();
+  })().finally(() => {
+    maintenance = null;
   });
+  return maintenance;
 }
 
-chrome.runtime.onInstalled.addListener(async () => {
-  setupThemeUpdateAlarm();
-  await migrateSymlinkedThemes();
-  await resyncAppliedThemeCss();
-  checkAndApplyThemeUpdates();
-});
-
-chrome.runtime.onStartup.addListener(async () => {
-  setupThemeUpdateAlarm();
-  await migrateSymlinkedThemes();
-  await resyncAppliedThemeCss();
-  checkAndApplyThemeUpdates();
-});
-
-chrome.alarms.onAlarm.addListener(alarm => {
-  if (alarm.name === THEME_UPDATE_ALARM) {
-    checkAndApplyThemeUpdates();
+chrome.runtime.onMessage.addListener((request, sender) => {
+  if (request.action === "musicPageReady" && isMusicPage(sender.url) && sender.tab) {
+    void maintainOnMusicPage().catch(error => warnBackground("Music page maintenance failed:", error));
   }
-});
-
-chrome.runtime.onMessage.addListener(request => {
   if (request.action === "applyStyles") {
     chrome.tabs.query({ url: "*://music.youtube.com/*" }, tabs => {
       tabs.forEach(tab => {
@@ -160,7 +153,8 @@ chrome.runtime.onMessage.addListener(request => {
       });
     });
   }
-  return true;
+  return false;
 });
 
 initBackgroundAuth();
+initDirectLyrics();

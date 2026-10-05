@@ -2,7 +2,6 @@ import { INITIALIZE_LOG } from "@constants";
 import { AppState } from "@core/appState";
 import { injectI18nCssVars, loadLocaleOverride, subscribeToLocaleChanges } from "@core/i18n";
 import { purgeExpiredKeys, saveCacheInfo } from "@core/storage";
-import { prewarmAuthenticationToken } from "@modules/lyrics/providers/unified";
 import { initProviders } from "@modules/lyrics/providers/shared";
 import { setupRequestSniffer } from "@modules/lyrics/requestSniffer/requestSniffer";
 import {
@@ -51,6 +50,9 @@ import { logCore } from "@core/logger";
  * storage, and lyric providers.
  */
 async function modify(isDisposed: () => boolean): Promise<void> {
+  void chrome.runtime
+    .sendMessage({ action: "musicPageReady" })
+    .catch(error => logCore("Music page startup failed:", error));
   applyLoggingSetting();
   await injectHeadTags();
   if (isDisposed()) return;
@@ -80,7 +82,6 @@ async function modify(isDisposed: () => boolean): Promise<void> {
   disableInertWhenFullscreen();
   setupAltHoverHandler();
   initProviders();
-  prewarmAuthenticationToken();
   setUpAvButtonListener();
   logCore(
     INITIALIZE_LOG,

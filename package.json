@@ -59,6 +59,7 @@
         "fast-xml-parser": "^5.11.1",
         "fflate": "^0.8.3",
         "marked": "^18.0.13",
+        "opencc-js": "^1.0.5",
         "rics": "^0.3.22",
         "sortablejs": "^1.15.7"
     },

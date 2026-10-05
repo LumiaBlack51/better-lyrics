@@ -4,6 +4,7 @@ import { lrcFixers, parseLRC, parseQRC, PlainParser } from "@braccato/parsers";
 import { type LyricSourceKey, type LyricSourceResult, type ProviderParameters, saveLyricsToCache } from "./shared";
 import { fillTtml } from "@modules/lyrics/providers/ttmlSource";
 import { errorCore, logCore, warnCore } from "@core/logger";
+import { settleWithin } from "./selectReady";
 
 const JWT_RENEWAL_THRESHOLD_SECONDS = 60 * 60;
 
@@ -252,23 +253,28 @@ function findIsrc(value: unknown, visited = new Set<unknown>(), depth = 0): stri
 }
 
 // Active streams map: videoId -> Promise that resolves when stream ends/fails
-const activeStreams = new Map<string, Promise<void>>();
+const activeStreams = new Map<ProviderParameters, Promise<void>>();
 
 // Waiters map: videoId -> sourceKey -> resolve function
-const waiters = new Map<string, Map<string, () => void>>();
+const waiters = new Map<ProviderParameters, Map<string, () => void>>();
 
 export function awaitUnifiedStream(videoId: string): Promise<void> {
-  return activeStreams.get(videoId) ?? Promise.resolve();
+  return Promise.all(
+    [...activeStreams].filter(([params]) => params.videoId === videoId).map(([, promise]) => promise)
+  ).then(() => undefined);
 }
 
 export function resetUnifiedStream(videoId: string): void {
-  activeStreams.delete(videoId);
-  waiters.delete(videoId);
+  for (const params of activeStreams.keys()) {
+    if (params.videoId !== videoId) continue;
+    activeStreams.delete(params);
+    resolveAllWaiters(params);
+  }
 }
 
 function resolveWaiter(params: ProviderParameters, sourceKey: LyricSourceKey) {
   saveLyricsToCache(params, sourceKey).then(() => {
-    const videoWaiters = waiters.get(params.videoId);
+    const videoWaiters = waiters.get(params);
     if (videoWaiters) {
       const resolve = videoWaiters.get(sourceKey);
       if (resolve) {
@@ -279,23 +285,30 @@ function resolveWaiter(params: ProviderParameters, sourceKey: LyricSourceKey) {
   });
 }
 
-function resolveAllWaiters(videoId: string) {
-  const videoWaiters = waiters.get(videoId);
+function resolveAllWaiters(params: ProviderParameters) {
+  const videoWaiters = waiters.get(params);
   if (videoWaiters) {
     for (const resolve of videoWaiters.values()) {
       resolve();
     }
-    waiters.delete(videoId);
+    waiters.delete(params);
   }
 }
 
 async function startStream(providerParameters: ProviderParameters, retryCount = 0): Promise<void> {
   const { song, artist, duration, album, alwaysFetchMetadata, signal, audioTrackData, videoId } = providerParameters;
 
-  let jwt = await getAuthenticationToken(retryCount > 0);
+  let jwt = await settleWithin(getAuthenticationToken(retryCount > 0), 8000, signal).catch(error => {
+    if (!signal.aborted) errorCore("Authentication failed:", error);
+    return null;
+  });
+  if (signal.aborted) {
+    resolveAllWaiters(providerParameters);
+    return;
+  }
   if (!jwt) {
     errorCore("Could not obtain authentication token. Aborting stream.");
-    resolveAllWaiters(videoId);
+    resolveAllWaiters(providerParameters);
     return;
   }
 
@@ -326,14 +339,14 @@ async function startStream(providerParameters: ProviderParameters, retryCount = 
 
     if (!response.ok) {
       errorCore(`Stream API request failed: ${response.status}`);
-      resolveAllWaiters(videoId);
+      resolveAllWaiters(providerParameters);
       return;
     }
 
     const reader = response.body?.getReader();
     if (!reader) {
       errorCore("No response body reader available.");
-      resolveAllWaiters(videoId);
+      resolveAllWaiters(providerParameters);
       return;
     }
 
@@ -378,8 +391,8 @@ async function startStream(providerParameters: ProviderParameters, retryCount = 
       }
       resolveWaiter(providerParameters, key);
     });
-    resolveAllWaiters(videoId);
-    activeStreams.delete(videoId);
+    resolveAllWaiters(providerParameters);
+    activeStreams.delete(providerParameters);
   }
 }
 
@@ -596,17 +609,15 @@ export default async function unified(
   providerParameters: ProviderParameters,
   targetSource: LyricSourceKey
 ): Promise<void> {
-  const { videoId } = providerParameters;
-
   // If already filled, return immediately (should be handled by getLyrics, but good for safety)
   if (providerParameters.sourceMap[targetSource].filled) {
     return;
   }
 
   // Ensure stream is running
-  if (!activeStreams.has(videoId)) {
-    const streamPromise = startStream(providerParameters);
-    activeStreams.set(videoId, streamPromise);
+  if (!activeStreams.has(providerParameters)) {
+    const streamPromise = startStream(providerParameters).finally(() => activeStreams.delete(providerParameters));
+    activeStreams.set(providerParameters, streamPromise);
     // Note: We don't await the stream promise itself, as it resolves when the stream *ends*
   }
 
@@ -618,10 +629,10 @@ export default async function unified(
       return;
     }
 
-    let videoWaiters = waiters.get(videoId);
+    let videoWaiters = waiters.get(providerParameters);
     if (!videoWaiters) {
       videoWaiters = new Map();
-      waiters.set(videoId, videoWaiters);
+      waiters.set(providerParameters, videoWaiters);
     }
     videoWaiters.set(targetSource, resolve);
   });

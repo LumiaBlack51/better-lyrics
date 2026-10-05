@@ -11,8 +11,9 @@ import { stringSimilarity } from "@modules/lyrics/lyricParseUtils";
 import { flushLoader, refreshDockSources, renderLoader } from "@modules/ui/dom";
 import { publishPictureInPictureLyrics } from "@modules/ui/pictureInPicture/lyricsPublisher";
 import type { Lyric, LyricSourceResult, ProviderParameters, SourceMapType } from "./providers/shared";
-import { getLyrics, newSourceMap, providerPriority } from "./providers/shared";
-import { awaitUnifiedStream } from "./providers/unified";
+import { getLyrics, loadCachedSources, newSourceMap, providerPriority } from "./providers/shared";
+import { selectReady, settleWithin } from "./providers/selectReady";
+import { normalizeTrackText } from "./providers/trackMatch";
 import type { YTLyricSourceResult } from "./providers/yt";
 import { getSongAlbum, getSongMetadata, type SegmentMap } from "./requestSniffer/requestSniffer";
 import { clearCache as clearTranslationCache } from "./translation";
@@ -138,28 +139,6 @@ function recordAvailableProviders(sourceMap: SourceMapType): boolean {
   return changed;
 }
 
-async function completeSourceProbe(providerParameters: ProviderParameters, signal: AbortSignal): Promise<void> {
-  if (!AppState.isControlsDockEnabled || !AppState.isDockSourceEnabled) return;
-  try {
-    await awaitUnifiedStream(providerParameters.videoId);
-    for (const provider of providerPriority) {
-      if (signal.aborted) return;
-      if (providerParameters.sourceMap[provider].filled) continue;
-      try {
-        await getLyrics(providerParameters, provider);
-      } catch (err) {
-        logCore(err);
-      }
-    }
-  } catch (err) {
-    logCore(err);
-  }
-  if (signal.aborted) return;
-  if (recordAvailableProviders(providerParameters.sourceMap)) {
-    refreshDockSources();
-  }
-}
-
 /**
  * Main function to create and inject lyrics for the current song.
  * Handles caching, API requests, and fallback mechanisms.
@@ -216,7 +195,7 @@ export async function createLyrics(detail: PlayerDetails, signal: AbortSignal): 
       renderLoader();
       shouldCleanupLoader = true;
       clearTranslationCache();
-      matchingSong = await getSongMetadata(videoId, 250, signal);
+      matchingSong = await getSongMetadata(videoId, 10, signal);
       segmentMap = matchingSong?.segmentMap || null;
       AppState.areLyricsLoaded = false;
       AppState.areLyricsTicking = false;
@@ -246,7 +225,7 @@ export async function createLyrics(detail: PlayerDetails, signal: AbortSignal): 
 
     song = song.trim();
     artist = normalizeArtist(artist);
-    let album = await getSongAlbum(videoId, signal);
+    let album = await getSongAlbum(videoId, signal, 10);
     if (!album) {
       album = "";
     }
@@ -280,29 +259,51 @@ export async function createLyrics(detail: PlayerDetails, signal: AbortSignal): 
     };
     let ytLyricsEarlyInjectAbortController = new AbortController();
 
-    let ytLyricsPromise = getLyrics(providerParameters, "yt-lyrics").then(lyrics => {
-      if (!AppState.areLyricsLoaded && lyrics && !signal.aborted) {
-        if (!ytLyricsEarlyInjectAbortController.signal.aborted) {
-          logCore("Temporarily Using YT Music Lyrics while we wait for synced lyrics to load");
-          let lyricsWithMeta = {
-            ...lyrics,
-            song: providerParameters.song,
-            artist: providerParameters.artist,
-            duration: providerParameters.duration,
-            videoId: providerParameters.videoId,
-            album: providerParameters.album || "",
-            segmentMap: null,
-          };
-
-          processLyrics(document, lyricsWithMeta, true, signal);
-          retainParsedLyrics(lyricsWithMeta);
-        }
-      }
-      return lyrics;
+    await loadCachedSources(providerParameters);
+    const pinnedProvider = AppState.manualProviderKey;
+    const orderedProviders =
+      pinnedProvider && providerPriority.includes(pinnedProvider)
+        ? [pinnedProvider, ...providerPriority.filter(provider => provider !== pinnedProvider)]
+        : providerPriority;
+    const cachedProvider = orderedProviders.find(key => {
+      const result = sourceMap[key].lyricSourceResult;
+      return (
+        result?.lyrics?.length &&
+        (key === pinnedProvider || result.lyrics.some(line => line.startTimeMs > 0 || line.parts?.length)) &&
+        !(hideInstrumentalOnly.getBooleanValue() && isInstrumentalOnly(result.lyrics))
+      );
     });
 
+    let ytLyricsPromise = (cachedProvider ? Promise.resolve(null) : getLyrics(providerParameters, "yt-lyrics"))
+      .then(lyrics => {
+        if (!AppState.areLyricsLoaded && lyrics && !signal.aborted) {
+          if (!ytLyricsEarlyInjectAbortController.signal.aborted) {
+            logCore("Temporarily Using YT Music Lyrics while we wait for synced lyrics to load");
+            let lyricsWithMeta = {
+              ...lyrics,
+              song: providerParameters.song,
+              artist: providerParameters.artist,
+              duration: providerParameters.duration,
+              videoId: providerParameters.videoId,
+              album: providerParameters.album || "",
+              segmentMap: null,
+            };
+
+            processLyrics(document, lyricsWithMeta, true, signal);
+            retainParsedLyrics(lyricsWithMeta);
+          }
+        }
+        return lyrics;
+      })
+      .catch(error => {
+        logCore(error);
+        return null;
+      });
+
     try {
-      let meta = await getLyrics(providerParameters, "metadata");
+      let meta = cachedProvider
+        ? sourceMap.metadata.lyricSourceResult
+        : await settleWithin(getLyrics(providerParameters, "metadata"), 400);
       if (meta && meta.album && meta.album.length > 0) {
         providerParameters.album = meta.album;
       }
@@ -324,51 +325,56 @@ export async function createLyrics(detail: PlayerDetails, signal: AbortSignal): 
       logCore(err);
     }
 
-    let selectedProvider: string | undefined;
-
-    const pinnedProvider = AppState.manualProviderKey;
-    const orderedProviders =
-      pinnedProvider && providerPriority.includes(pinnedProvider)
-        ? [pinnedProvider, ...providerPriority.filter(provider => provider !== pinnedProvider)]
-        : providerPriority;
-
-    for (let provider of orderedProviders) {
-      if (signal.aborted) {
-        return;
-      }
-
-      try {
-        let sourceLyrics = await getLyrics(providerParameters, provider);
-
-        if (sourceLyrics && sourceLyrics.lyrics && sourceLyrics.lyrics.length > 0) {
-          if (hideInstrumentalOnly.getBooleanValue() && isInstrumentalOnly(sourceLyrics.lyrics)) {
-            continue;
-          }
-          ytLyricsEarlyInjectAbortController.abort("Lyrics are ready"); // May not be ideal when the stringSimilarity fails, but this should be rare anyways
-          let ytLyrics = (await ytLyricsPromise) as YTLyricSourceResult;
-
-          if (ytLyrics !== null) {
-            let lyricText = "";
-            sourceLyrics.lyrics.forEach(lyric => {
-              lyricText += lyric.words + "\n";
-            });
-
-            let matchAmount = stringSimilarity(lyricText.toLowerCase(), ytLyrics.text.toLowerCase());
-            if (matchAmount < 0.5) {
-              logCore(
-                `Got lyrics from ${sourceLyrics.source}, but they don't match YT lyrics. Rejecting: Match: ${matchAmount}%`
-              );
-              continue;
+    let selectedProvider: string | undefined = cachedProvider;
+    if (cachedProvider) {
+      lyrics = sourceMap[cachedProvider].lyricSourceResult;
+    } else {
+      const ytLyrics = (await settleWithin(ytLyricsPromise, 250)) as YTLyricSourceResult | null;
+      let plainFallback: { provider: keyof SourceMapType; result: LyricSourceResult } | undefined;
+      const selection = await selectReady(
+        orderedProviders.map(provider => async () => {
+          try {
+            const sourceLyrics = await getLyrics(providerParameters, provider);
+            if (!signal.aborted && AppState.lastLoadedVideoId === detail.videoId && recordAvailableProviders(sourceMap))
+              refreshDockSources();
+            if (!sourceLyrics?.lyrics?.length) return null;
+            if (hideInstrumentalOnly.getBooleanValue() && isInstrumentalOnly(sourceLyrics.lyrics)) return null;
+            if (ytLyrics && sourceLyrics.source !== "Unison") {
+              const text = sourceLyrics.lyrics.map(line => line.words).join("\n");
+              const match = stringSimilarity(normalizeTrackText(text), normalizeTrackText(ytLyrics.text));
+              if (match < 0.5) {
+                logCore(`Rejecting ${sourceLyrics.source}: lyric text match ${match}`);
+                return null;
+              }
             }
+            if (
+              provider !== pinnedProvider &&
+              !sourceLyrics.lyrics.some(line => line.startTimeMs > 0 || line.parts?.length)
+            ) {
+              if (
+                !plainFallback ||
+                orderedProviders.indexOf(provider) < orderedProviders.indexOf(plainFallback.provider)
+              )
+                plainFallback = { provider, result: sourceLyrics };
+              return null;
+            }
+            return sourceLyrics;
+          } catch (error) {
+            logCore(error);
+            return null;
           }
-          lyrics = sourceLyrics;
-          selectedProvider = provider;
-          break;
-        }
-      } catch (err) {
-        logCore(err);
+        }),
+        signal
+      );
+      if (selection) {
+        lyrics = selection.value;
+        selectedProvider = orderedProviders[selection.index];
+      } else if (plainFallback) {
+        selectedProvider = plainFallback.provider;
+        lyrics = plainFallback.result;
       }
     }
+    ytLyricsEarlyInjectAbortController.abort("Lyrics are ready");
 
     if (!lyrics) {
       lyrics = {
@@ -418,7 +424,6 @@ export async function createLyrics(detail: PlayerDetails, signal: AbortSignal): 
     processLyrics(document, lyricsWithMeta, false, signal);
     retainParsedLyrics(lyricsWithMeta);
     shouldCleanupLoader = false;
-    void completeSourceProbe(providerParameters, signal);
   } finally {
     if (shouldCleanupLoader) {
       flushLoader();
@@ -443,7 +448,7 @@ export async function preFetchLyrics(
   let duration = Number(detail.duration);
   let signal = new AbortController().signal; // create a signal to pass to other funcs, not used
 
-  let matchingSong = await getSongMetadata(videoId, 250, signal);
+  let matchingSong = await getSongMetadata(videoId, 10, signal);
   let swappedVideoId = false;
 
   if (matchingSong) {
@@ -458,7 +463,7 @@ export async function preFetchLyrics(
 
   song = song.trim();
   artist = normalizeArtist(artist);
-  let album = await getSongAlbum(videoId, signal);
+  let album = await getSongAlbum(videoId, signal, 10);
   if (!album) {
     album = "";
   }
@@ -479,8 +484,16 @@ export async function preFetchLyrics(
     signal,
   };
 
+  await loadCachedSources(providerParameters);
+  if (
+    providerPriority.some(key =>
+      sourceMap[key].lyricSourceResult?.lyrics?.some(line => line.startTimeMs > 0 || line.parts?.length)
+    )
+  )
+    return;
+
   try {
-    let meta = await getLyrics(providerParameters, "metadata");
+    let meta = await settleWithin(getLyrics(providerParameters, "metadata"), 400);
     if (meta && meta.album && meta.album.length > 0 && album !== meta.album) {
       providerParameters.album = meta.album;
     }

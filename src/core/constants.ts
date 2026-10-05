@@ -187,7 +187,7 @@ export const SERVER_ERROR_LOG = "[BetterLyrics] Server Error:" as const;
 export const STORAGE_TRANSIENT_SET_LOG = "[BetterLyrics] Set transient storage for key: " as const;
 export const MUSIC_NOTES = "♪𝅘𝅥𝅮𝅘𝅥𝅯𝅘𝅥𝅰𝅘𝅥𝅱𝅘𝅥𝅲" as const;
 
-export const LYRICS_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const LYRICS_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const LYRICS_NEGATIVE_CACHE_TTL_MS = 30 * 60 * 1000;
 
 export const OFFSET_STORAGE_PREFIX = "blyricsOffset_";
@@ -408,6 +408,8 @@ interface ProviderConfig {
 }
 
 export const PROVIDER_CONFIGS: ProviderConfig[] = [
+  { key: "netease-synced", displayName: "NetEase", syncType: "line", priority: 9.1 },
+  { key: "lrclib-direct-synced", displayName: "LRCLIB (Direct)", syncType: "line", priority: 10.1 },
   { key: "bLyrics-richsynced", displayName: "Better Lyrics", syncType: "syllable", priority: 0 },
   {
     key: "unison-richsynced",
