@@ -54,6 +54,16 @@ function isExpired(expiry: number | undefined, now = Date.now()): boolean {
   return Boolean(expiry && now >= expiry);
 }
 
+let cacheInfoTimer: ReturnType<typeof setTimeout> | undefined;
+
+function scheduleCacheInfo(): void {
+  clearTimeout(cacheInfoTimer);
+  cacheInfoTimer = setTimeout(() => {
+    cacheInfoTimer = undefined;
+    void saveCacheInfo().catch(error => logError(error));
+  }, 1000);
+}
+
 const COMPILE_TIMEOUT = 3000;
 const MAX_ITERATIONS = 10000;
 const HARD_TIMEOUT = 5000;
@@ -187,7 +197,7 @@ export async function setTransientStorage(key: string, value: any, ttl: number):
       },
     });
     logCore(STORAGE_TRANSIENT_SET_LOG, key);
-    await saveCacheInfo();
+    scheduleCacheInfo();
   } catch (error) {
     logError(error);
   }

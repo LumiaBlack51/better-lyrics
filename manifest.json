@@ -14,7 +14,9 @@
   "chromium:key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4RTGjLjI1KqxGLgE7d3tD4O+mTA6pKDPZ29V4/uP9nBicHRst7R7n5wdFW1qvLiILyUqRm1fURMBeShb0mcPEMC6iW3cr4i8NG+52VxFcPIYbsegPHJsQFVWe6lgorVw20yn2mWshGKIppgN14FJCSFc7mS/CX4JL88E82AIaFJiVBgmpBu5RMcglUfSwMH5ePlRV68dOhMjX8bdoHH6FoAARh7igtyKBKEzA811PWRIBiKZBGAZc2ew6+5O2mERuFq0PRvfEcD4KsBRiWHltyUcYzVjIMF4soC8i6lNOJx8it0kAn5PN6G7TdiD3HbU5eLqk+iCr+cK/pS1ybiACQIDAQAB",
   "chromium-based:key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4RTGjLjI1KqxGLgE7d3tD4O+mTA6pKDPZ29V4/uP9nBicHRst7R7n5wdFW1qvLiILyUqRm1fURMBeShb0mcPEMC6iW3cr4i8NG+52VxFcPIYbsegPHJsQFVWe6lgorVw20yn2mWshGKIppgN14FJCSFc7mS/CX4JL88E82AIaFJiVBgmpBu5RMcglUfSwMH5ePlRV68dOhMjX8bdoHH6FoAARh7igtyKBKEzA811PWRIBiKZBGAZc2ew6+5O2mERuFq0PRvfEcD4KsBRiWHltyUcYzVjIMF4soC8i6lNOJx8it0kAn5PN6G7TdiD3HbU5eLqk+iCr+cK/pS1ybiACQIDAQAB",
   "host_permissions": [
-    "*://music.youtube.com/*"
+    "*://music.youtube.com/*",
+    "https://music.163.com/*",
+    "https://lrclib.net/*"
   ],
   "permissions": [
     "storage",
@@ -32,7 +34,7 @@
   ],
   "optional_host_permissions": [],
   "content_security_policy": {
-    "extension_pages": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://api.fontshare.com https://fonts.googleapis.com; font-src 'self' data: https://cdn.fontshare.com https://fonts.gstatic.com; img-src 'self' data: https://blrcunison.vercel.app https://boidu.dev https://betterlyrics.org https://raw.githubusercontent.com https://placehold.co https://cdn.betterlyrics.org https://cdn.discordapp.com https://*.googleusercontent.com https://i.ytimg.com; connect-src https://unison.betterlyrics.org https://unison.boidu.dev https://raw.githubusercontent.com https://api.github.com https://themes.betterlyrics.org; frame-src https://themes.betterlyrics.org;"
+    "extension_pages": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://api.fontshare.com https://fonts.googleapis.com; font-src 'self' data: https://cdn.fontshare.com https://fonts.gstatic.com; img-src 'self' data: https://blrcunison.vercel.app https://boidu.dev https://betterlyrics.org https://raw.githubusercontent.com https://placehold.co https://cdn.betterlyrics.org https://cdn.discordapp.com https://*.googleusercontent.com https://i.ytimg.com; connect-src https://music.163.com https://lrclib.net https://unison.betterlyrics.org https://unison.boidu.dev https://raw.githubusercontent.com https://api.github.com https://themes.betterlyrics.org; frame-src https://themes.betterlyrics.org;"
   },
   "options_ui": {
     "page": "src/options/options.html",

@@ -249,8 +249,12 @@ export async function getArtworkMetadata(
  * @param signal - AbortSignal to cancel polling
  * @return
  */
-export async function getSongAlbum(videoId: string, signal?: AbortSignal): Promise<string | null | undefined> {
-  for (let i = 0; i < 250; i++) {
+export async function getSongAlbum(
+  videoId: string,
+  signal?: AbortSignal,
+  maxCheckCount = 250
+): Promise<string | null | undefined> {
+  for (let i = 0; i < maxCheckCount; i++) {
     if (signal?.aborted) return undefined;
     if (videoIdToAlbumMap.has(videoId)) {
       return videoIdToAlbumMap.get(videoId);

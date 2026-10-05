@@ -2,6 +2,8 @@ import { strict as assert } from "node:assert";
 import { EXTRA_LANGUAGE_CODES, languageName } from "@modules/unison/languageNames";
 import { extraLanguageOptions, languageOptionList, matchLanguageOption } from "@/options/unison/languages";
 
+Object.defineProperty(globalThis, "navigator", { value: { language: "en-US" }, configurable: true });
+
 // -- Chinese scripts --------------------------
 
 assert.equal(matchLanguageOption("zh-TW"), "zh-Hant");

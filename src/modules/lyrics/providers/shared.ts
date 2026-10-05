@@ -13,6 +13,7 @@ import { ytCaptions } from "./ytCaptions";
 import unison, { type UnisonData } from "@modules/lyrics/providers/unison";
 import { mergePreferredProviders } from "./providerList";
 import { logCore } from "@core/logger";
+import { directLrcLib, netease } from "./direct";
 /** Current version of the lyrics cache format */
 const LYRIC_CACHE_VERSION = "2.2.0";
 
@@ -109,6 +110,8 @@ export type SourceMapType = {
   [key in LyricSourceKey]: LyricSource;
 };
 
+const pendingFills = new WeakMap<SourceMapType, Map<LyricSource["lyricSourceFiller"], Promise<void>>>();
+
 const defaultPreferredProviderList: LyricSourceKey[] = [...PROVIDER_CONFIGS]
   .sort((a, b) => a.priority - b.priority)
   .map(p => p.key) as LyricSourceKey[];
@@ -148,6 +151,8 @@ export function initProviders(): void {
 }
 
 const sourceKeyToFillFn = {
+  "netease-synced": netease,
+  "lrclib-direct-synced": directLrcLib,
   "binimum-richsynced": (p: ProviderParameters) => unified(p, "binimum-richsynced"),
   "binimum-synced": (p: ProviderParameters) => unified(p, "binimum-synced"),
   "bLyrics-richsynced": (p: ProviderParameters) => unified(p, "bLyrics-richsynced"),
@@ -224,20 +229,35 @@ export async function getLyrics(
     const cacheKey = `blyrics_${providerParameters.videoId}_${sourceName}`;
     const cachedData = await getTransientStorage(cacheKey);
     if (cachedData) {
-      const data = JSON.parse(cachedData);
-      if (data && data.version && data.version === LYRIC_CACHE_VERSION) {
-        lyricSource.filled = true;
-        lyricSource.resultCached = true;
-        if (data.missing === true) {
-          lyricSource.lyricSourceResult = null;
-          return null;
+      try {
+        const data = JSON.parse(cachedData);
+        if (data && data.version && data.version === LYRIC_CACHE_VERSION) {
+          lyricSource.filled = true;
+          lyricSource.resultCached = true;
+          if (data.missing === true) {
+            lyricSource.lyricSourceResult = null;
+            return null;
+          }
+          lyricSource.lyricSourceResult = data;
+          return data;
         }
-        lyricSource.lyricSourceResult = data;
-        return data;
+      } catch (error) {
+        logCore("Ignoring invalid lyrics cache", error);
       }
     }
 
-    await lyricSource.lyricSourceFiller(providerParameters);
+    let pending = pendingFills.get(providerParameters.sourceMap);
+    if (!pending) {
+      pending = new Map();
+      pendingFills.set(providerParameters.sourceMap, pending);
+    }
+    let filling = pending.get(lyricSource.lyricSourceFiller);
+    if (!filling) {
+      filling = lyricSource.lyricSourceFiller(providerParameters);
+      pending.set(lyricSource.lyricSourceFiller, filling);
+      void filling.finally(() => pending!.delete(lyricSource.lyricSourceFiller)).catch(error => logCore(error));
+    }
+    await filling;
   }
 
   // Save result to cache for each provider
@@ -248,4 +268,27 @@ export async function getLyrics(
   );
 
   return lyricSource.lyricSourceResult;
+}
+
+export async function loadCachedSources(params: ProviderParameters): Promise<void> {
+  await Promise.all(
+    Object.keys(params.sourceMap).map(async key => {
+      const source = params.sourceMap[key as LyricSourceKey];
+      const cached = await getTransientStorage(`blyrics_${params.videoId}_${key}`);
+      if (!cached) return;
+      try {
+        const data = JSON.parse(cached);
+        if (
+          data.version !== LYRIC_CACHE_VERSION ||
+          (data.missing !== true && key !== "metadata" && !Array.isArray(data.lyrics))
+        )
+          return;
+        source.filled = true;
+        source.resultCached = true;
+        source.lyricSourceResult = data.missing ? null : data;
+      } catch (error) {
+        logCore("Ignoring invalid lyrics cache", error);
+      }
+    })
+  );
 }
